@@ -4,7 +4,11 @@ import {
   BOARD_BACKGROUNDS,
   createCard,
   createList,
+  fetchArchived,
   fetchBoard,
+  restoreList,
+  updateCard,
+  type ArchivedItems,
   LABEL_COLORS,
   moveCard,
   renameList,
@@ -18,12 +22,15 @@ import {
 import { ApiError } from '../lib/api'
 import { CardTile } from '../components/CardTile'
 import { CardModal } from '../components/CardModal'
+import { useKanbanEvents } from '../hooks/useKanbanEvents'
 import { ArchiveIcon, ChevronLeftIcon, DotsIcon, FilterIcon, PlusIcon, XIcon } from '../components/kbIcons'
 import type { AuthSession } from '../lib/auth'
 
 interface BoardPageProps {
   session: AuthSession
+  companyId: string
   boardId: string
+  initialCardId?: string | null
   onBack: () => void
 }
 
@@ -40,14 +47,16 @@ function positionBetween(cards: Card[], index: number): number {
   return STEP
 }
 
-export function BoardPage({ session, boardId, onBack }: BoardPageProps) {
+export function BoardPage({ session, companyId, boardId, initialCardId = null, onBack }: BoardPageProps) {
   const token = session.token.token
   const [board, setBoard] = useState<BoardDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const [openCardId, setOpenCardId] = useState<string | null>(null)
+  const [openCardId, setOpenCardId] = useState<string | null>(initialCardId)
+  const [refreshSignal, setRefreshSignal] = useState(0)
+  const [archivedOpen, setArchivedOpen] = useState(false)
   const [dragging, setDragging] = useState<Dragging | null>(null)
   const [cardDrop, setCardDrop] = useState<{ listId: string; index: number } | null>(null)
   const [listDropIndex, setListDropIndex] = useState<number | null>(null)
@@ -70,18 +79,57 @@ export function BoardPage({ session, boardId, onBack }: BoardPageProps) {
   const boardRef = useRef<BoardDetail | null>(null)
   boardRef.current = board
 
-  const load = useCallback(() => {
-    setLoading(true)
-    setError(null)
-    fetchBoard(token, boardId)
-      .then(setBoard)
-      .catch((err) => setError(err instanceof ApiError ? err.message : 'Não foi possível carregar o quadro.'))
-      .finally(() => setLoading(false))
-  }, [token, boardId])
+  const load = useCallback(
+    (silent = false) => {
+      if (!silent) {
+        setLoading(true)
+        setError(null)
+      }
+      fetchBoard(token, boardId)
+        .then(setBoard)
+        .catch((err) => {
+          if (!silent) setError(err instanceof ApiError ? err.message : 'Não foi possível carregar o quadro.')
+        })
+        .finally(() => setLoading(false))
+    },
+    [token, boardId]
+  )
 
   useEffect(() => {
     load()
   }, [load])
+
+  // Link direto do cartão: a URL acompanha o cartão aberto.
+  useEffect(() => {
+    window.history.replaceState(null, '', openCardId ? `/b/${boardId}?card=${openCardId}` : `/b/${boardId}`)
+  }, [openCardId, boardId])
+
+  // Tempo real: outro usuário mexeu no quadro -> busca de novo sem piscar.
+  // Se esta pessoa está arrastando um cartão, espera soltar para não atrapalhar.
+  const draggingRef = useRef<Dragging | null>(null)
+  draggingRef.current = dragging
+  const pendingRefresh = useRef(false)
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const refreshFromServer = useCallback(() => {
+    if (draggingRef.current) {
+      pendingRefresh.current = true
+      return
+    }
+    pendingRefresh.current = false
+    load(true)
+    setRefreshSignal((value) => value + 1)
+  }, [load])
+
+  useKanbanEvents(companyId, (event) => {
+    if (event.boardId && event.boardId !== boardId) return
+    if (refreshTimer.current) clearTimeout(refreshTimer.current)
+    refreshTimer.current = setTimeout(refreshFromServer, 350)
+  })
+
+  useEffect(() => {
+    if (!dragging && pendingRefresh.current) refreshFromServer()
+  }, [dragging, refreshFromServer])
 
   function showNotice(message: string) {
     setNotice(message)
@@ -352,6 +400,14 @@ export function BoardPage({ session, boardId, onBack }: BoardPageProps) {
               Limpar filtros
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => setArchivedOpen(true)}
+            className="flex items-center gap-1.5 rounded-md bg-white/15 px-2.5 py-1.5 text-[13px] font-semibold hover:bg-white/30"
+          >
+            <ArchiveIcon className="h-4 w-4" />
+            Arquivados
+          </button>
           <div className="relative">
             <button
               type="button"
@@ -645,12 +701,26 @@ export function BoardPage({ session, boardId, onBack }: BoardPageProps) {
         </div>
       </div>
 
+      {archivedOpen && (
+        <ArchivedPanel
+          token={token}
+          boardId={board.id}
+          onClose={() => setArchivedOpen(false)}
+          onRestored={() => {
+            load(true)
+            setRefreshSignal((value) => value + 1)
+          }}
+        />
+      )}
+
       {openCardId && (
         <CardModal
           token={token}
           cardId={openCardId}
           board={board}
+          refreshSignal={refreshSignal}
           onClose={() => setOpenCardId(null)}
+          onDuplicated={(card) => replaceCard(card)}
           onCardChange={replaceCard}
           onCardRemoved={(cardId) => {
             removeCard(cardId)
@@ -659,6 +729,105 @@ export function BoardPage({ session, boardId, onBack }: BoardPageProps) {
           onLabelsChange={(labels) => setBoard((current) => (current ? { ...current, labels } : current))}
         />
       )}
+    </div>
+  )
+}
+
+function ArchivedPanel({
+  token,
+  boardId,
+  onClose,
+  onRestored,
+}: {
+  token: string
+  boardId: string
+  onClose: () => void
+  onRestored: () => void
+}) {
+  const [items, setItems] = useState<ArchivedItems | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const reload = useCallback(() => {
+    fetchArchived(token, boardId)
+      .then(setItems)
+      .catch((err) => setError(err instanceof ApiError ? err.message : 'Não foi possível carregar os arquivados.'))
+  }, [token, boardId])
+
+  useEffect(() => {
+    reload()
+  }, [reload])
+
+  async function restore(action: () => Promise<unknown>) {
+    setError(null)
+    try {
+      await action()
+      reload()
+      onRestored()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Não foi possível restaurar.')
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[55] flex justify-end bg-black/40" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside className="flex h-full w-full max-w-[360px] flex-col bg-[var(--kb-modal)] text-[var(--kb-card-ink)] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+          <h2 className="text-[15px] font-semibold">Itens arquivados</h2>
+          <button type="button" onClick={onClose} aria-label="Fechar" className="rounded p-1.5 hover:bg-[var(--kb-modal-soft)]">
+            <XIcon className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {error && <p className="mb-3 rounded-md bg-[#f87168] px-3 py-2 text-[13px] font-semibold text-[#2d0a07]">{error}</p>}
+          {!items ? (
+            <p className="text-[13px] text-[var(--kb-list-muted)]">Carregando…</p>
+          ) : items.lists.length === 0 && items.cards.length === 0 ? (
+            <p className="text-[13px] text-[var(--kb-list-muted)]">Nada arquivado neste quadro.</p>
+          ) : (
+            <>
+              {items.cards.length > 0 && (
+                <>
+                  <p className="mb-2 text-[12px] font-semibold uppercase text-[var(--kb-list-muted)]">Cartões</p>
+                  <div className="mb-5 flex flex-col gap-2">
+                    {items.cards.map((card) => (
+                      <div key={card.id} className="rounded-lg bg-[var(--kb-modal-soft)] p-3">
+                        <p className="text-[14px] font-medium">{card.title}</p>
+                        <p className="text-[12px] text-[var(--kb-list-muted)]">na lista {card.list_title}</p>
+                        <button
+                          type="button"
+                          onClick={() => restore(() => updateCard(token, card.id, { archived: false }))}
+                          className="mt-2 rounded-md bg-[var(--kb-accent)] px-3 py-1 text-[12.5px] font-semibold text-white hover:opacity-90"
+                        >
+                          Restaurar
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {items.lists.length > 0 && (
+                <>
+                  <p className="mb-2 text-[12px] font-semibold uppercase text-[var(--kb-list-muted)]">Listas</p>
+                  <div className="flex flex-col gap-2">
+                    {items.lists.map((list) => (
+                      <div key={list.id} className="flex items-center justify-between rounded-lg bg-[var(--kb-modal-soft)] p-3">
+                        <p className="text-[14px] font-medium">{list.title}</p>
+                        <button
+                          type="button"
+                          onClick={() => restore(() => restoreList(token, list.id))}
+                          className="rounded-md bg-[var(--kb-accent)] px-3 py-1 text-[12.5px] font-semibold text-white hover:opacity-90"
+                        >
+                          Restaurar
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </aside>
     </div>
   )
 }

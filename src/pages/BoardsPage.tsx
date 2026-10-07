@@ -7,6 +7,7 @@ import {
   type BoardSummary,
 } from '../lib/kanban'
 import { ApiError } from '../lib/api'
+import { useKanbanEvents } from '../hooks/useKanbanEvents'
 import { BoardIcon, PlusIcon, TrashIcon, XIcon } from '../components/kbIcons'
 import type { AuthSession, AuthCompany } from '../lib/auth'
 
@@ -46,6 +47,10 @@ export function BoardsPage({ session, company, onOpen }: BoardsPageProps) {
       cancelled = true
     }
   }, [token, company.id, reloadKey])
+
+  useKanbanEvents(company.id, (event) => {
+    if (event.type === 'board') setReloadKey((key) => key + 1)
+  })
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault()

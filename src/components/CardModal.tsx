@@ -10,9 +10,11 @@ import {
   deleteChecklistItem,
   deleteComment,
   deleteLabel,
+  duplicateCard,
   fetchCard,
   LABEL_COLORS,
   moveCard,
+  reorderChecklistItems,
   summarize,
   toggleCardLabel,
   toggleCardMember,
@@ -42,6 +44,7 @@ import {
   ChecklistIcon,
   ClockIcon,
   CommentIcon,
+  CopyIcon,
   ImageIcon,
   MoveIcon,
   PaperclipIcon,
@@ -57,7 +60,9 @@ interface CardModalProps {
   token: string
   cardId: string
   board: BoardDetail
+  refreshSignal: number
   onClose: () => void
+  onDuplicated: (card: Card) => void
   onCardChange: (card: Card) => void
   onCardRemoved: (cardId: string) => void
   onLabelsChange: (labels: Label[]) => void
@@ -82,7 +87,17 @@ function SectionTitle({ icon, children, action }: { icon: React.ReactNode; child
   )
 }
 
-export function CardModal({ token, cardId, board, onClose, onCardChange, onCardRemoved, onLabelsChange }: CardModalProps) {
+export function CardModal({
+  token,
+  cardId,
+  board,
+  refreshSignal,
+  onClose,
+  onDuplicated,
+  onCardChange,
+  onCardRemoved,
+  onLabelsChange,
+}: CardModalProps) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [popover, setPopover] = useState<PopoverKind>(null)
@@ -95,6 +110,9 @@ export function CardModal({ token, cardId, board, onClose, onCardChange, onCardR
   const [addingItemTo, setAddingItemTo] = useState<string | null>(null)
   const [itemDraft, setItemDraft] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const [dragItem, setDragItem] = useState<{ checklistId: string; id: string } | null>(null)
+  const serverTitle = useRef('')
   const [uploading, setUploading] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -106,6 +124,7 @@ export function CardModal({ token, cardId, board, onClose, onCardChange, onCardR
     (next: CardDetail) => {
       setDetail(next)
       setTitleDraft(next.title)
+      serverTitle.current = next.title
       onCardChange(summarize(next))
     },
     [onCardChange]
@@ -122,6 +141,26 @@ export function CardModal({ token, cardId, board, onClose, onCardChange, onCardR
   useEffect(() => {
     refresh()
   }, [refresh])
+
+  // Outro usuário mexeu no quadro: atualiza este cartão sem apagar o que está sendo digitado.
+  const firstSignal = useRef(true)
+  useEffect(() => {
+    if (firstSignal.current) {
+      firstSignal.current = false
+      return
+    }
+    fetchCard(token, cardId)
+      .then((next) => {
+        setDetail(next)
+        setTitleDraft((draft) => (draft === serverTitle.current ? next.title : draft))
+        serverTitle.current = next.title
+        onCardChange(summarize(next))
+      })
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 404) onCardRemoved(cardId)
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSignal])
 
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
@@ -241,6 +280,34 @@ export function CardModal({ token, cardId, board, onClose, onCardChange, onCardR
     await refresh()
   }
 
+  async function duplicate() {
+    const card = await run(() => duplicateCard(token, cardId), 'Não foi possível copiar o cartão.')
+    if (card) {
+      onDuplicated(card)
+      setNote('Cópia criada ao lado deste cartão.')
+      setTimeout(() => setNote(null), 4000)
+    }
+  }
+
+  async function dropItem(checklistId: string, targetId: string) {
+    const dragged = dragItem
+    setDragItem(null)
+    if (!dragged || dragged.checklistId !== checklistId || dragged.id === targetId || !detail) return
+    const checklist = detail.checklists.find((item) => item.id === checklistId)
+    if (!checklist) return
+    const moving = checklist.items.find((item) => item.id === dragged.id)
+    if (!moving) return
+    const rest = checklist.items.filter((item) => item.id !== dragged.id)
+    const targetIndex = rest.findIndex((item) => item.id === targetId)
+    const items = [...rest.slice(0, targetIndex), moving, ...rest.slice(targetIndex)]
+    setDetail({
+      ...detail,
+      checklists: detail.checklists.map((item) => (item.id === checklistId ? { ...item, items } : item)),
+    })
+    await run(() => reorderChecklistItems(token, checklistId, items.map((item) => item.id)), 'Não foi possível reordenar os itens.')
+    await refresh()
+  }
+
   async function moveToList(listId: string) {
     if (!detail || listId === detail.list_id) return
     const target = board.lists.find((list) => list.id === listId)
@@ -314,6 +381,7 @@ export function CardModal({ token, cardId, board, onClose, onCardChange, onCardR
             </div>
 
             {error && <p className="rounded-md bg-[#f87168] px-3 py-2 text-[13px] font-semibold text-[#2d0a07]">{error}</p>}
+            {note && <p className="rounded-md bg-[#4bce97] px-3 py-2 text-[13px] font-semibold text-[#09326c]">{note}</p>}
 
             <div className="flex flex-wrap gap-2">
               <div className="relative">
@@ -678,7 +746,25 @@ export function CardModal({ token, cardId, board, onClose, onCardChange, onCardR
                         </div>
                         <div className="flex flex-col">
                           {checklist.items.map((item) => (
-                            <div key={item.id} className="group flex items-start gap-3 rounded-md px-1 py-1.5 hover:bg-[var(--kb-modal-soft)]">
+                            <div
+                              key={item.id}
+                              draggable
+                              onDragStart={(event) => {
+                                event.dataTransfer.setData('text/plain', item.id)
+                                setDragItem({ checklistId: checklist.id, id: item.id })
+                              }}
+                              onDragEnd={() => setDragItem(null)}
+                              onDragOver={(event) => {
+                                if (dragItem?.checklistId === checklist.id) event.preventDefault()
+                              }}
+                              onDrop={(event) => {
+                                event.preventDefault()
+                                dropItem(checklist.id, item.id)
+                              }}
+                              className={`group flex cursor-grab items-start gap-3 rounded-md px-1 py-1.5 hover:bg-[var(--kb-modal-soft)] ${
+                                dragItem?.id === item.id ? 'opacity-40' : ''
+                              }`}
+                            >
                               <input
                                 type="checkbox"
                                 checked={item.checked}
@@ -825,6 +911,10 @@ export function CardModal({ token, cardId, board, onClose, onCardChange, onCardR
                   </select>
                   <MoveIcon className="pointer-events-none absolute right-7 top-2 hidden h-4 w-4" />
                 </div>
+                <button type="button" onClick={duplicate} className={actionButton}>
+                  <CopyIcon className="h-4 w-4" />
+                  Copiar
+                </button>
                 <button type="button" onClick={archive} className={actionButton}>
                   <ArchiveIcon className="h-4 w-4" />
                   Arquivar

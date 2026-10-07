@@ -4,6 +4,7 @@ import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { CompanySelectionPage } from './pages/CompanySelectionPage'
 import { BoardPage } from './pages/BoardPage'
 import { BoardsPage } from './pages/BoardsPage'
+import { SearchBox } from './components/SearchBox'
 import { ThemeToggle } from './components/ThemeToggle'
 import { Logo } from './components/Logo'
 import { LogoutIcon, BuildingsIcon } from './components/icons'
@@ -23,10 +24,19 @@ import {
 
 type Screen = 'login' | 'forgot-password'
 
-// Rota simples por caminho: "/" lista os quadros e "/b/:id" abre um quadro.
-function readBoardId(): string | null {
+// Rota simples por caminho: "/" lista os quadros, "/b/:id" abre um quadro e
+// "/b/:id?card=ID" abre direto um cartão (link compartilhável).
+interface Route {
+  boardId: string | null
+  cardId: string | null
+}
+
+function readRoute(): Route {
   const match = window.location.pathname.match(/^\/b\/([^/]+)/)
-  return match ? match[1] : null
+  return {
+    boardId: match ? match[1] : null,
+    cardId: match ? new URLSearchParams(window.location.search).get('card') : null,
+  }
 }
 
 function App() {
@@ -34,17 +44,17 @@ function App() {
   const [activeCompany, setActiveCompany] = useState<AuthCompany | null>(() => loadActiveCompany())
   const [screen, setScreen] = useState<Screen>('login')
   const [switchingCompany, setSwitchingCompany] = useState(false)
-  const [boardId, setBoardId] = useState<string | null>(() => readBoardId())
+  const [route, setRoute] = useState<Route>(() => readRoute())
 
   useEffect(() => {
-    const onPop = () => setBoardId(readBoardId())
+    const onPop = () => setRoute(readRoute())
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
-  function openBoard(id: string | null) {
-    window.history.pushState(null, '', id ? `/b/${id}` : '/')
-    setBoardId(id)
+  function openBoard(id: string | null, cardId: string | null = null) {
+    window.history.pushState(null, '', id ? (cardId ? `/b/${id}?card=${cardId}` : `/b/${id}`) : '/')
+    setRoute({ boardId: id, cardId })
   }
 
   function handleLoginSuccess(newSession: AuthSession) {
@@ -110,6 +120,9 @@ function App() {
             <Logo className="h-6 w-6" />
             <button type="button" onClick={() => openBoard(null)} className="text-[13px] font-bold text-[var(--ink)] hover:underline">Tarefas</button>
           </div>
+          <div className="mx-3 flex min-w-0 flex-1 justify-center">
+            <SearchBox token={session.token.token} companyId={activeCompany.id} onPick={(board, card) => openBoard(board, card)} />
+          </div>
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -131,8 +144,15 @@ function App() {
           </div>
         </header>
         <main className="min-h-0 flex-1">
-          {boardId ? (
-            <BoardPage key={boardId} session={session} boardId={boardId} onBack={() => openBoard(null)} />
+          {route.boardId ? (
+            <BoardPage
+              key={`${route.boardId}:${route.cardId ?? ''}`}
+              session={session}
+              companyId={activeCompany.id}
+              boardId={route.boardId}
+              initialCardId={route.cardId}
+              onBack={() => openBoard(null)}
+            />
           ) : (
             <BoardsPage session={session} company={activeCompany} onOpen={openBoard} />
           )}

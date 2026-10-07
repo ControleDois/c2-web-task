@@ -1,5 +1,9 @@
 export const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3333'
 
+// Identifica esta aba nas requisições: o servidor repassa o id no aviso em
+// tempo real, e a própria aba ignora o aviso das mudanças que ela mesma fez.
+export const CLIENT_ID = Math.random().toString(36).slice(2) + Date.now().toString(36)
+
 export class ApiError extends Error {
   status: number
   // Corpo bruto (já parseado) da resposta de erro, quando veio JSON — usado
@@ -58,6 +62,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   const headers: Record<string, string> = {}
   if (token) headers.Authorization = `Bearer ${token}`
+  headers['X-Client-Id'] = CLIENT_ID
   if (!form) headers['Content-Type'] = 'application/json'
 
   let response: Response

@@ -212,3 +212,35 @@ export function summarize(detail: CardDetail): Card {
     comments: detail.activity.filter((entry) => entry.kind === 'comment').length,
   }
 }
+
+export interface ArchivedItems {
+  lists: { id: string; title: string }[]
+  cards: { id: string; title: string; list_title: string }[]
+}
+
+export interface SearchResult {
+  card_id: string
+  title: string
+  list_title: string
+  board_id: string
+  board_title: string
+}
+
+export const fetchArchived = (token: string, boardId: string) =>
+  apiGet<ArchivedItems>(`/kanban/boards/${boardId}/archived`, {}, token)
+
+export const restoreList = (token: string, id: string) => apiPost<unknown>(`/kanban/lists/${id}/restore`, {}, token)
+
+export const duplicateCard = (token: string, id: string) => apiPost<Card>(`/kanban/cards/${id}/duplicate`, {}, token)
+
+export const searchCards = (token: string, companyId: string, q: string) =>
+  apiGet<SearchResult[]>('/kanban/search', { companyId, q }, token)
+
+export const reorderChecklistItems = (token: string, checklistId: string, ids: string[]) =>
+  apiPost<unknown>(`/kanban/checklists/${checklistId}/items/reorder`, { ids }, token)
+
+export interface KanbanEvent {
+  type: 'board' | 'content'
+  boardId: string | null
+  clientId: string | null
+}
