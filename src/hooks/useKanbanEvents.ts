@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { connectSocket } from '../lib/socket'
+import { connectSocket, joinCompany } from '../lib/socket'
 import { CLIENT_ID } from '../lib/api'
 import type { KanbanEvent } from '../lib/kanban'
 
@@ -16,7 +16,7 @@ export function useKanbanEvents(companyId: string, onEvent: (event: KanbanEvent)
       if (event.clientId && event.clientId === CLIENT_ID) return
       handler.current(event)
     }
-    const rejoin = () => socket.emit('join:company', { companyId })
+    const rejoin = () => joinCompany(socket, companyId)
 
     socket.on('kanban:updated', listener)
     // Ao reconectar (rede caiu e voltou) entra na sala de novo e atualiza, pois pode ter perdido avisos.
