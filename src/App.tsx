@@ -4,6 +4,7 @@ import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { CompanySelectionPage } from './pages/CompanySelectionPage'
 import { BoardPage } from './pages/BoardPage'
 import { BoardsPage } from './pages/BoardsPage'
+import { RoutinesPage } from './pages/RoutinesPage'
 import { SearchBox } from './components/SearchBox'
 import { ThemeToggle } from './components/ThemeToggle'
 import { Logo } from './components/Logo'
@@ -29,9 +30,11 @@ type Screen = 'login' | 'forgot-password'
 interface Route {
   boardId: string | null
   cardId: string | null
+  routines?: boolean
 }
 
 function readRoute(): Route {
+  if (window.location.pathname.startsWith('/rotinas')) return { boardId: null, cardId: null, routines: true }
   const match = window.location.pathname.match(/^\/b\/([^/]+)/)
   return {
     boardId: match ? match[1] : null,
@@ -55,6 +58,11 @@ function App() {
   function openBoard(id: string | null, cardId: string | null = null) {
     window.history.pushState(null, '', id ? (cardId ? `/b/${id}?card=${cardId}` : `/b/${id}`) : '/')
     setRoute({ boardId: id, cardId })
+  }
+
+  function openRoutines() {
+    window.history.pushState(null, '', '/rotinas')
+    setRoute({ boardId: null, cardId: null, routines: true })
   }
 
   function handleLoginSuccess(newSession: AuthSession) {
@@ -118,7 +126,8 @@ function App() {
         <header className="flex flex-none items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
           <div className="flex items-center gap-2.5">
             <Logo className="h-6 w-6" />
-            <button type="button" onClick={() => openBoard(null)} className="text-[13px] font-bold text-[var(--ink)] hover:underline">Tarefas</button>
+            <button type="button" onClick={() => openBoard(null)} className={`text-[13px] font-bold hover:underline ${route.routines ? 'text-[var(--ink-soft)]' : 'text-[var(--ink)]'}`}>Tarefas</button>
+            <button type="button" onClick={openRoutines} className={`text-[13px] font-bold hover:underline ${route.routines ? 'text-[var(--ink)]' : 'text-[var(--ink-soft)]'}`}>Rotinas</button>
           </div>
           <div className="mx-3 flex min-w-0 flex-1 justify-center">
             <SearchBox token={session.token.token} companyId={activeCompany.id} onPick={(board, card) => openBoard(board, card)} />
@@ -144,7 +153,9 @@ function App() {
           </div>
         </header>
         <main className="min-h-0 flex-1">
-          {route.boardId ? (
+          {route.routines ? (
+            <RoutinesPage session={session} company={activeCompany} />
+          ) : route.boardId ? (
             <BoardPage
               key={`${route.boardId}:${route.cardId ?? ''}`}
               session={session}
